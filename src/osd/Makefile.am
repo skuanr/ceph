@@ -3,6 +3,7 @@ libosd_la_SOURCES = \
 	osd/PGLog.cc \
 	osd/ReplicatedPG.cc \
 	osd/ReplicatedBackend.cc \
+	osd/ECBackend.cc \
 	osd/PGBackend.cc \
 	osd/Ager.cc \
 	osd/HitSet.cc \
@@ -33,6 +34,7 @@ noinst_HEADERS += \
 	osd/ReplicatedPG.h \
 	osd/PGBackend.h \
 	osd/ReplicatedBackend.h \
+	osd/ECBackend.h \
 	osd/Watch.h \
 	osd/osd_types.h
 
