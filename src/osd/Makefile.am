@@ -30,6 +30,7 @@ libosd_la_SOURCES = \
 	common/TrackedOp.cc \
 	osd/SnapMapper.cc \
 	osd/osd_types.cc \
+	osd/ECUtil.cc \
 	objclass/class_api.cc
 libosd_la_LIBADD = $(LIBOSDC) $(LIBOS) $(LIBERASURE_CODE)
 noinst_LTLIBRARIES += libosd.la
@@ -52,6 +53,7 @@ noinst_HEADERS += \
 	osd/PGBackend.h \
 	osd/ReplicatedBackend.h \
 	osd/ECBackend.h \
+	osd/ECUtil.h \
 	osd/ECMsgTypes.h \
 	osd/Watch.h \
 	osd/osd_types.h
