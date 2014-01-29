@@ -43,9 +43,10 @@
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, this)
-static ostream& _prefix(std::ostream *_dout, const PG *pg) 
+template <class T>
+static ostream& _prefix(std::ostream *_dout, T *t)
 {
-  return *_dout << pg->gen_prefix();
+  return *_dout << t->gen_prefix();
 }
 
 void PG::get(const string &tag) 
@@ -161,6 +162,7 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   info(p),
   info_struct_v(0),
   coll(p), pg_log(cct), log_oid(loid), biginfo_oid(ioid),
+  missing_loc(this),
   recovery_item(this), scrub_item(this), scrub_finalize_item(this), snap_trim_item(this), stat_queue_item(this),
   recovery_ops_active(0),
   role(0),
@@ -245,7 +247,6 @@ void PG::proc_master_log(
   dout(10) << " peer osd." << from << " now " << oinfo << " " << omissing << dendl;
   might_have_unfound.insert(from);
 
-  search_for_missing(oinfo, &omissing, from);
   peer_missing[from].swap(omissing);
 }
     
@@ -263,7 +264,6 @@ void PG::proc_replica_log(
   dout(10) << " peer osd." << from << " now " << oinfo << " " << omissing << dendl;
   might_have_unfound.insert(from);
 
-  search_for_missing(oinfo, &omissing, from);
   for (map<hobject_t, pg_missing_t::item>::iterator i = omissing.missing.begin();
        i != omissing.missing.end();
        ++i) {
@@ -374,19 +374,57 @@ void PG::rewind_divergent_log(ObjectStore::Transaction& t, eversion_t newhead)
  * Instead, we probably want to just iterate over our unfound set.
  */
 bool PG::search_for_missing(
-  const pg_info_t &oinfo, const pg_missing_t *omissing,
-  pg_shard_t fromosd)
+  const pg_info_t &oinfo, const pg_missing_t &omissing,
+  pg_shard_t from,
+  RecoveryCtx *ctx)
 {
-  bool stats_updated = false;
-  bool found_missing = false;
+  unsigned num_unfound_before = missing_loc.num_unfound();
+  bool found_missing = missing_loc.add_source_info(
+    from, oinfo, omissing);
+  if (found_missing && num_unfound_before != missing_loc.num_unfound())
+    publish_stats_to_osd();
+  if (found_missing &&
+    (get_osdmap()->get_features(NULL) & CEPH_FEATURE_OSD_ERASURE_CODES)) {
+    pg_info_t tinfo(oinfo);
+    tinfo.pgid.shard = pg_whoami.shard;
+    (*(ctx->info_map))[from.osd].push_back(
+      make_pair(
+	pg_notify_t(
+	  from.shard, pg_whoami.shard,
+	  get_osdmap()->get_epoch(),
+	  get_osdmap()->get_epoch(),
+	  tinfo),
+	past_intervals));
+  }
+  return found_missing;
+}
 
-  // take note that we've probed this peer, for
-  // all_unfound_are_queried_or_lost()'s benefit.
-  peer_missing[fromosd];
+bool PG::MissingLoc::readable_with_acting(
+  const hobject_t &hoid,
+  const set<pg_shard_t> &acting) const {
+  if (!needs_recovery(hoid)) return true;
+  if (!missing_loc.count(hoid)) return false;
+  const set<pg_shard_t> &locs = missing_loc.find(hoid)->second;
+  dout(10) << __func__ << ": locs:" << locs << dendl;
+  set<pg_shard_t> have_acting;
+  for (set<pg_shard_t>::const_iterator i = locs.begin();
+       i != locs.end();
+       ++i) {
+    if (acting.count(*i))
+      have_acting.insert(*i);
+  }
+  return (*is_readable)(have_acting);
+}
 
+bool PG::MissingLoc::add_source_info(
+  pg_shard_t fromosd,
+  const pg_info_t &oinfo,
+  const pg_missing_t &omissing)
+{
+  bool found_missing = false;;
   // found items?
-  for (map<hobject_t,pg_missing_t::item>::const_iterator p = pg_log.get_missing().missing.begin();
-       p != pg_log.get_missing().missing.end();
+  for (map<hobject_t,pg_missing_t::item>::const_iterator p = needs_recovery_map.begin();
+       p != needs_recovery_map.end();
        ++p) {
     const hobject_t &soid(p->first);
     eversion_t need = p->second.need;
@@ -407,53 +445,29 @@ bool PG::search_for_missing(
       continue;
     }
     if (oinfo.last_complete < need) {
-      if (!omissing) {
-	// We know that the peer lacks some objects at the revision we need.
-	// Without the peer's missing set, we don't know whether it has this
-	// particular object or not.
-	dout(10) << __func__ << " " << soid << " " << need
-		 << " might also be missing on osd." << fromosd << dendl;
-	continue;
-      }
-
-      if (omissing->is_missing(soid)) {
+      if (omissing.is_missing(soid)) {
 	dout(10) << "search_for_missing " << soid << " " << need
 		 << " also missing on osd." << fromosd << dendl;
 	continue;
       }
     }
+
     dout(10) << "search_for_missing " << soid << " " << need
 	     << " is on osd." << fromosd << dendl;
 
-    map<hobject_t, set<pg_shard_t> >::iterator ml = missing_loc.find(soid);
-    if (ml == missing_loc.end()) {
-      map<hobject_t, list<OpRequestRef> >::iterator wmo =
-	waiting_for_missing_object.find(soid);
-      if (wmo != waiting_for_missing_object.end()) {
-	requeue_ops(wmo->second);
-      }
-      stats_updated = true;
-      missing_loc[soid].insert(fromosd);
-      missing_loc_sources.insert(fromosd);
-    }
-    else {
-      ml->second.insert(fromosd);
-      missing_loc_sources.insert(fromosd);
-    }
+    missing_loc[soid].insert(fromosd);
+    missing_loc_sources.insert(fromosd);
     found_missing = true;
   }
-  if (stats_updated) {
-    publish_stats_to_osd();
-  }
 
-  dout(20) << "search_for_missing missing " << pg_log.get_missing().missing << dendl;
+  dout(20) << "needs_recovery_map missing " << needs_recovery_map << dendl;
   return found_missing;
 }
 
 void PG::discover_all_missing(map<int, map<spg_t,pg_query_t> > &query_map)
 {
   const pg_missing_t &missing = pg_log.get_missing();
-  assert(missing.have_missing());
+  assert(have_unfound());
 
   dout(10) << __func__ << " "
 	   << missing.num_missing() << " missing, "
@@ -801,7 +815,6 @@ void PG::clear_primary_state()
   finish_sync_event = 0;  // so that _finish_recvoery doesn't go off in another thread
 
   missing_loc.clear();
-  missing_loc_sources.clear();
 
   pg_log.reset_recovery_pointers();
 
@@ -1401,20 +1414,11 @@ void PG::activate(ObjectStore::Transaction& t,
 
   send_notify = false;
 
-  info.last_epoch_started = query_epoch;
+  if (is_acting(pg_whoami))
+    info.last_epoch_started = query_epoch;
 
   const pg_missing_t &missing = pg_log.get_missing();
 
-  if (is_primary()) {
-    // If necessary, create might_have_unfound to help us find our unfound objects.
-    // NOTE: It's important that we build might_have_unfound before trimming the
-    // past intervals.
-    might_have_unfound.clear();
-    if (missing.have_missing()) {
-      build_might_have_unfound();
-    }
-  }
- 
   if (is_primary()) {
     last_update_ondisk = info.last_update;
     min_last_complete_ondisk = eversion_t(0,0);  // we don't know (yet)!
@@ -1564,6 +1568,39 @@ void PG::activate(ObjectStore::Transaction& t,
       } else {
         dout(10) << "activate peer osd." << peer << " " << pi << " missing " << pm << dendl;
       }
+    }
+
+    // Set up missing_loc
+    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
+	 i != actingbackfill.end();
+	 ++i) {
+      if (*i == get_primary()) {
+	missing_loc.add_active_missing(pg_log.get_missing());
+      } else {
+	assert(peer_missing.count(*i));
+	missing_loc.add_active_missing(peer_missing[*i]);
+      }
+    }
+    missing_loc.add_source_info(pg_whoami, info, pg_log.get_missing());
+    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
+	 i != actingbackfill.end();
+	 ++i) {
+      if (*i == pg_whoami) continue;
+      dout(10) << __func__ << ": adding " << *i << " as a source" << dendl;
+      assert(peer_missing.count(*i));
+      assert(peer_info.count(*i));
+      missing_loc.add_source_info(
+	*i,
+	peer_info[*i],
+	peer_missing[*i]);
+    }
+
+    // If necessary, create might_have_unfound to help us find our unfound objects.
+    // NOTE: It's important that we build might_have_unfound before trimming the
+    // past intervals.
+    might_have_unfound.clear();
+    if (needs_recovery()) {
+      build_might_have_unfound();
     }
 
     // degraded?
@@ -1937,7 +1974,7 @@ static void split_replay_queue(
 void PG::split_ops(PG *child, unsigned split_bits) {
   unsigned match = child->info.pgid.ps();
   assert(waiting_for_all_missing.empty());
-  assert(waiting_for_missing_object.empty());
+  assert(waiting_for_unreadable_object.empty());
   assert(waiting_for_degraded_object.empty());
   assert(waiting_for_ack.empty());
   assert(waiting_for_ondisk.empty());
@@ -3389,11 +3426,10 @@ void PG::repair_object(
     peer_missing[bad_peer].add(soid, oi.version, eversion_t());
   } else {
     // We should only be scrubbing if the PG is clean.
-    assert(waiting_for_missing_object.empty());
+    assert(waiting_for_unreadable_object.empty());
 
     pg_log.missing_add(soid, oi.version, eversion_t());
-    missing_loc[soid].insert(ok_peer);
-    missing_loc_sources.insert(ok_peer);
+    missing_loc.add_location(soid, ok_peer);
 
     pg_log.set_last_requested(0);
   }
@@ -6096,7 +6132,7 @@ boost::statechart::result PG::RecoveryState::Active::react(const ActMap&)
   if (pg->cct->_conf->osd_check_for_log_corruption)
     pg->check_log_for_corruption(pg->osd->store);
 
-  int unfound = pg->pg_log.get_missing().num_missing() - pg->missing_loc.size();
+  int unfound = pg->missing_loc.num_unfound();
   if (unfound > 0 &&
       pg->all_unfound_are_queried_or_lost(pg->get_osdmap())) {
     if (pg->cct->_conf->osd_auto_mark_unfound_lost) {
@@ -6176,8 +6212,14 @@ boost::statechart::result PG::RecoveryState::Active::react(const MLogRec& logevt
   dout(10) << "searching osd." << logevt.from
            << " log for unfound items" << dendl;
   PG *pg = context< RecoveryMachine >().pg;
-  bool got_missing = pg->search_for_missing(logevt.msg->info,
-                                            &logevt.msg->missing, logevt.from);
+  pg->proc_replica_log(
+    *context<RecoveryMachine>().get_cur_transaction(),
+    logevt.msg->info, logevt.msg->log, logevt.msg->missing, logevt.from);
+  bool got_missing = pg->search_for_missing(
+    pg->peer_info[logevt.from],
+    pg->peer_missing[logevt.from],
+    logevt.from,
+    context< RecoveryMachine >().get_recovery_ctx());
   if (got_missing)
     pg->osd->queue_for_recovery(pg);
   return discard_event();
@@ -6921,7 +6963,6 @@ PG::RecoveryState::GetMissing::GetMissing(my_context ctx)
       //        can infer the rest!
       dout(10) << " osd." << *i << " has no missing, identical log" << dendl;
       pg->peer_missing[*i];
-      pg->search_for_missing(pi, &pg->peer_missing[*i], *i);
       continue;
     }
 
@@ -7066,17 +7107,10 @@ boost::statechart::result PG::RecoveryState::WaitUpThru::react(const ActMap& am)
 
 boost::statechart::result PG::RecoveryState::WaitUpThru::react(const MLogRec& logevt)
 {
-  dout(10) << "searching osd." << logevt.from
-           << " log for unfound items" << dendl;
+  dout(10) << "Noting missing from osd." << logevt.from << dendl;
   PG *pg = context< RecoveryMachine >().pg;
-  bool got_missing = pg->search_for_missing(logevt.msg->info,
-                                            &logevt.msg->missing, logevt.from);
-
-  // hmm.. should we?
-  (void)got_missing;
-  //if (got_missing)
-  //pg->osd->queue_for_recovery(pg);
-
+  pg->peer_missing[logevt.from].swap(logevt.msg->missing);
+  pg->peer_info[logevt.from] = logevt.msg->info;
   return discard_event();
 }
 

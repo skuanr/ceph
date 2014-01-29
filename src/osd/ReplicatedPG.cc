@@ -253,14 +253,17 @@ void ReplicatedPG::on_local_recover(
     t->register_on_applied_sync(new C_OSD_OndiskWriteUnlock(obc));
 
     publish_stats_to_osd();
-    if (waiting_for_missing_object.count(hoid)) {
-      dout(20) << " kicking waiters on " << hoid << dendl;
-      requeue_ops(waiting_for_missing_object[hoid]);
-      waiting_for_missing_object.erase(hoid);
-      if (pg_log.get_missing().missing.size() == 0) {
-	requeue_ops(waiting_for_all_missing);
-	waiting_for_all_missing.clear();
-      }
+    assert(missing_loc.needs_recovery(hoid));
+    missing_loc.add_location(hoid, pg_whoami);
+    if (!is_unreadable_object(hoid) &&
+        waiting_for_unreadable_object.count(hoid)) {
+      dout(20) << " kicking unreadable waiters on " << hoid << dendl;
+      requeue_ops(waiting_for_unreadable_object[hoid]);
+      waiting_for_unreadable_object.erase(hoid);
+    }
+    if (pg_log.get_missing().missing.size() == 0) {
+      requeue_ops(waiting_for_all_missing);
+      waiting_for_all_missing.clear();
     }
   } else {
     t->register_on_applied(
@@ -283,6 +286,7 @@ void ReplicatedPG::on_local_recover(
 void ReplicatedPG::on_global_recover(
   const hobject_t &soid)
 {
+  missing_loc.recovered(soid);
   publish_stats_to_osd();
   dout(10) << "pushed " << soid << " to all replicas" << dendl;
   map<hobject_t, ObjectContextRef>::iterator i = recovering.find(soid);
@@ -295,7 +299,13 @@ void ReplicatedPG::on_global_recover(
   }
   recovering.erase(i);
   finish_recovery_op(soid);
+  if (waiting_for_unreadable_object.count(soid)) {
+    dout(20) << " kicking unreadable waiters on " << soid << dendl;
+    requeue_ops(waiting_for_unreadable_object[soid]);
+    waiting_for_unreadable_object.erase(soid);
+  }
   if (waiting_for_degraded_object.count(soid)) {
+    dout(20) << " kicking degraded waiters on " << soid << dendl;
     requeue_ops(waiting_for_degraded_object[soid]);
     waiting_for_degraded_object.erase(soid);
   }
@@ -378,36 +388,32 @@ bool ReplicatedPG::same_for_rep_modify_since(epoch_t e)
 // ====================
 // missing objects
 
-bool ReplicatedPG::is_missing_object(const hobject_t& soid)
+bool ReplicatedPG::is_missing_object(const hobject_t& soid) const
 {
   return pg_log.get_missing().missing.count(soid);
 }
 
-void ReplicatedPG::wait_for_missing_object(const hobject_t& soid, OpRequestRef op)
+void ReplicatedPG::wait_for_unreadable_object(
+  const hobject_t& soid, OpRequestRef op)
 {
-  assert(is_missing_object(soid));
+  assert(is_unreadable_object(soid));
 
-  const pg_missing_t &missing = pg_log.get_missing();
-
-  // we don't have it (yet).
-  map<hobject_t, pg_missing_t::item>::const_iterator g = missing.missing.find(soid);
-  assert(g != missing.missing.end());
-  const eversion_t &v(g->second.need);
+  eversion_t v;
+  bool needs_recovery = missing_loc.needs_recovery(soid, &v);
+  assert(needs_recovery);
 
   map<hobject_t, ObjectContextRef>::const_iterator p = recovering.find(soid);
   if (p != recovering.end()) {
     dout(7) << "missing " << soid << " v " << v << ", already recovering." << dendl;
-  }
-  else if (missing_loc.find(soid) == missing_loc.end()) {
+  } else if (missing_loc.is_unfound(soid)) {
     dout(7) << "missing " << soid << " v " << v << ", is unfound." << dendl;
-  }
-  else {
+  } else {
     dout(7) << "missing " << soid << " v " << v << ", recovering." << dendl;
     PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
     recover_missing(soid, v, cct->_conf->osd_client_op_priority, h);
     pgbackend->run_recovery_op(h, cct->_conf->osd_client_op_priority);
   }
-  waiting_for_missing_object[soid].push_back(op);
+  waiting_for_unreadable_object[soid].push_back(op);
   op->mark_delayed("waiting for missing object");
 }
 
@@ -639,7 +645,7 @@ int ReplicatedPG::do_command(cmdmap_t cmdmap, ostream& ss,
       return -EROFS;
     }
 
-    int unfound = missing.num_missing() - missing_loc.size();
+    int unfound = missing_loc.num_unfound();
     if (!unfound) {
       ss << "pg has no unfound objects";
       return 0;  // make command idempotent
@@ -692,13 +698,13 @@ int ReplicatedPG::do_command(cmdmap_t cmdmap, ostream& ss,
 	p->second.dump(f.get());  // have, need keys
 	{
 	  f->open_array_section("locations");
-	  map<hobject_t,set<pg_shard_t> >::iterator q =
-	    missing_loc.find(p->first);
-	  if (q != missing_loc.end())
-	    for (set<pg_shard_t>::iterator r = q->second.begin();
-		 r != q->second.end();
+	  if (missing_loc.needs_recovery(p->first)) {
+	    for (set<pg_shard_t>::iterator r =
+		   missing_loc.get_locations(p->first).begin();
+		 r != missing_loc.get_locations(p->first).end();
 		 ++r)
 	      f->dump_stream("shard") << *r;
+	  }
 	  f->close_section();
 	}
 	f->close_section();
@@ -1017,6 +1023,9 @@ ReplicatedPG::ReplicatedPG(OSDService *o, OSDMapRef curmap,
   temp_seq(0),
   snap_trimmer_machine(this)
 { 
+  missing_loc.set_backend_predicates(
+    pgbackend->get_is_readable_predicate(),
+    pgbackend->get_is_recoverable_predicate());
   snap_trimmer_machine.initiate();
 }
 
@@ -1177,8 +1186,8 @@ void ReplicatedPG::do_op(OpRequestRef op)
   }
 
   // missing object?
-  if (is_missing_object(head)) {
-    wait_for_missing_object(head, op);
+  if (is_unreadable_object(head)) {
+    wait_for_unreadable_object(head, op);
     return;
   }
 
@@ -1193,7 +1202,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
 		    CEPH_SNAPDIR, m->get_pg().ps(), info.pgid.pool(),
 		    m->get_object_locator().nspace);
   if (is_missing_object(snapdir)) {
-    wait_for_missing_object(snapdir, op);
+    wait_for_unreadable_object(snapdir, op);
     return;
   }
 
@@ -1229,7 +1238,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
 	 !(m->get_flags() & CEPH_OSD_FLAG_LOCALIZE_READS))) {
       // missing the specific snap we need; requeue and wait.
       assert(!can_create); // only happens on a read
-      wait_for_missing_object(missing_oid, op);
+      wait_for_unreadable_object(missing_oid, op);
       return;
     }
   }
@@ -1304,11 +1313,11 @@ void ReplicatedPG::do_op(OpRequestRef op)
 	int r;
 
 	if (src_oid.is_head() && is_missing_object(src_oid)) {
-	  wait_for_missing_object(src_oid, op);
+	  wait_for_unreadable_object(src_oid, op);
 	} else if ((r = find_object_context(
 		      src_oid, &sobc, false, &wait_oid)) == -EAGAIN) {
 	  // missing the specific snap we need; requeue and wait.
-	  wait_for_missing_object(wait_oid, op);
+	  wait_for_unreadable_object(wait_oid, op);
 	} else if (r) {
 	  if (!maybe_handle_cache(op, sobc, r, wait_oid, true))
 	    osd->reply_op_error(op, r);
@@ -1368,7 +1377,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
 	int r = find_object_context(clone_oid, &sobc, false, &wait_oid);
 	if (r == -EAGAIN) {
 	  // missing the specific snap we need; requeue and wait.
-	  wait_for_missing_object(wait_oid, op);
+	  wait_for_unreadable_object(wait_oid, op);
 	} else if (r) {
 	  if (!maybe_handle_cache(op, sobc, r, wait_oid, true))
 	    osd->reply_op_error(op, r);
@@ -4479,7 +4488,7 @@ int ReplicatedPG::_rollback_to(OpContext *ctx, ceph_osd_op& op)
     assert(is_missing_object(missing_oid));
     dout(20) << "_rollback_to attempted to roll back to a missing object "
 	     << missing_oid << " (requested snapid: ) " << snapid << dendl;
-    wait_for_missing_object(missing_oid, ctx->op);
+    wait_for_unreadable_object(missing_oid, ctx->op);
     return ret;
   }
   if (maybe_handle_cache(ctx->op, rollback_to, ret, missing_oid, true)) {
@@ -7411,8 +7420,7 @@ int ReplicatedPG::recover_missing(
   int priority,
   PGBackend::RecoveryHandle *h)
 {
-  map<hobject_t, set<pg_shard_t> >::iterator q = missing_loc.find(soid);
-  if (q == missing_loc.end()) {
+  if (missing_loc.is_unfound(soid)) {
     dout(7) << "pull " << soid
 	    << " v " << v 
 	    << " but it is unfound" << dendl;
@@ -8321,10 +8329,6 @@ void ReplicatedPG::_applied_recovered_object_replica()
 void ReplicatedPG::recover_got(hobject_t oid, eversion_t v)
 {
   dout(10) << "got missing " << oid << " v " << v << dendl;
-  if (pg_log.get_missing().is_missing(oid, v)) {
-      if (is_primary())
-	missing_loc.erase(oid);
-  }
   pg_log.recover_got(oid, v, info);
   if (pg_log.get_log().complete_to != pg_log.get_log().log.end()) {
     dout(10) << "last_complete now " << info.last_complete
@@ -8451,18 +8455,10 @@ void ReplicatedPG::failed_push(pg_shard_t from, const hobject_t &soid)
 {
   assert(recovering.count(soid));
   recovering.erase(soid);
-  map<hobject_t,set<pg_shard_t> >::iterator p = missing_loc.find(soid);
-  if (p != missing_loc.end()) {
-    dout(0) << "_failed_push " << soid << " from shard " << from
-	    << ", reps on " << p->second << dendl;
-
-    p->second.erase(from);          // forget about this (bad) peer replica
-    if (p->second.empty())
-      missing_loc.erase(p);
-  } else {
-    dout(0) << "_failed_push " << soid << " from shard " << from
-	    << " but not in missing_loc ???" << dendl;
-  }
+  missing_loc.remove_location(soid, from);
+  dout(0) << "_failed_push " << soid << " from shard " << from
+	  << ", reps on " << missing_loc.get_locations(soid)
+	  << " unfound? " << missing_loc.is_unfound(soid) << dendl;
   finish_recovery_op(soid);  // close out this attempt,
 }
 
@@ -8528,8 +8524,8 @@ ObjectContextRef ReplicatedPG::mark_object_lost(ObjectStore::Transaction *t,
   // Wake anyone waiting for this object. Now that it's been marked as lost,
   // we will just return an error code.
   map<hobject_t, list<OpRequestRef> >::iterator wmo =
-    waiting_for_missing_object.find(oid);
-  if (wmo != waiting_for_missing_object.end()) {
+    waiting_for_unreadable_object.find(oid);
+  if (wmo != waiting_for_unreadable_object.end()) {
     requeue_ops(wmo->second);
   }
 
@@ -8582,7 +8578,7 @@ void ReplicatedPG::mark_all_unfound_lost(int what)
   map<hobject_t, pg_missing_t::item>::const_iterator mend = missing.missing.end();
   while (m != mend) {
     const hobject_t &oid(m->first);
-    if (missing_loc.find(oid) != missing_loc.end()) {
+    if (!missing_loc.is_unfound(oid)) {
       // We only care about unfound objects
       ++m;
       continue;
@@ -8837,9 +8833,9 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
 
   // requeue object waiters
   if (is_primary()) {
-    requeue_object_waiters(waiting_for_missing_object);
+    requeue_object_waiters(waiting_for_unreadable_object);
   } else {
-    waiting_for_missing_object.clear();
+    waiting_for_unreadable_object.clear();
   }
   for (map<hobject_t,list<OpRequestRef> >::iterator p = waiting_for_degraded_object.begin();
        p != waiting_for_degraded_object.end();
@@ -8896,7 +8892,6 @@ void ReplicatedPG::on_pool_change()
 void ReplicatedPG::_clear_recovery_state()
 {
   missing_loc.clear();
-  missing_loc_sources.clear();
 #ifdef DEBUG_RECOVERY_OIDS
   recovering_oids.clear();
 #endif
@@ -8929,6 +8924,34 @@ void ReplicatedPG::check_recovery_sources(const OSDMapRef osdmap)
    * check that any peers we are planning to (or currently) pulling
    * objects from are dealt with.
    */
+  missing_loc.check_recovery_sources(osdmap);
+  pgbackend->check_recovery_sources(osdmap);
+
+  for (set<pg_shard_t>::iterator i = peer_log_requested.begin();
+       i != peer_log_requested.end();
+       ) {
+    if (!osdmap->is_up(i->osd)) {
+      dout(10) << "peer_log_requested removing " << *i << dendl;
+      peer_log_requested.erase(i++);
+    } else {
+      ++i;
+    }
+  }
+
+  for (set<pg_shard_t>::iterator i = peer_missing_requested.begin();
+       i != peer_missing_requested.end();
+       ) {
+    if (!osdmap->is_up(i->osd)) {
+      dout(10) << "peer_missing_requested removing " << *i << dendl;
+      peer_missing_requested.erase(i++);
+    } else {
+      ++i;
+    }
+  }
+}
+
+void PG::MissingLoc::check_recovery_sources(const OSDMapRef osdmap)
+{
   set<pg_shard_t> now_down;
   for (set<pg_shard_t>::iterator p = missing_loc_sources.begin();
        p != missing_loc_sources.end();
@@ -8941,7 +8964,6 @@ void ReplicatedPG::check_recovery_sources(const OSDMapRef osdmap)
     now_down.insert(*p);
     missing_loc_sources.erase(p++);
   }
-  pgbackend->check_recovery_sources(osdmap);
 
   if (now_down.empty()) {
     dout(10) << "check_recovery_sources no source osds (" << missing_loc_sources << ") went down" << dendl;
@@ -8964,28 +8986,6 @@ void ReplicatedPG::check_recovery_sources(const OSDMapRef osdmap)
 	missing_loc.erase(p++);
       else
 	++p;
-    }
-  }
-
-  for (set<pg_shard_t>::iterator i = peer_log_requested.begin();
-       i != peer_log_requested.end();
-       ) {
-    if (!osdmap->is_up(i->osd)) {
-      dout(10) << "peer_log_requested removing " << *i << dendl;
-      peer_log_requested.erase(i++);
-    } else {
-      ++i;
-    }
-  }
-
-  for (set<pg_shard_t>::iterator i = peer_missing_requested.begin();
-       i != peer_missing_requested.end();
-       ) {
-    if (!osdmap->is_up(i->osd)) {
-      dout(10) << "peer_missing_requested removing " << *i << dendl;
-      peer_missing_requested.erase(i++);
-    } else {
-      ++i;
     }
   }
 }
@@ -9072,6 +9072,12 @@ bool ReplicatedPG::start_recovery_ops(
   assert(recovering.empty());
   assert(recovery_ops_active == 0);
 
+  dout(10) << __func__ << " needs_recovery: "
+	   << missing_loc.get_needs_recovery()
+	   << dendl;
+  dout(10) << __func__ << " missing_loc: "
+	   << missing_loc.get_missing_locs()
+	   << dendl;
   int unfound = get_num_unfound();
   if (unfound) {
     dout(10) << " still have " << unfound << " unfound" << dendl;
@@ -9169,7 +9175,7 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
 
     eversion_t need = item.need;
 
-    bool unfound = (missing_loc.find(soid) == missing_loc.end());
+    bool unfound = missing_loc.is_unfound(soid);
 
     dout(10) << "recover_primary "
              << soid << " " << item.need
@@ -9237,16 +9243,16 @@ int ReplicatedPG::recover_primary(int max, ThreadPool::TPHandle &handle)
 	    eversion_t alternate_need = latest->reverting_to;
 	    dout(10) << " need to pull prior_version " << alternate_need << " for revert " << item << dendl;
 
-	    set<pg_shard_t>& loc = missing_loc[soid];
 	    for (map<pg_shard_t, pg_missing_t>::iterator p = peer_missing.begin();
 		 p != peer_missing.end();
 		 ++p)
 	      if (p->second.is_missing(soid, need) &&
 		  p->second.missing[soid].have == alternate_need) {
-		missing_loc_sources.insert(p->first);
-		loc.insert(p->first);
+		missing_loc.add_location(soid, p->first);
 	      }
-	    dout(10) << " will pull " << alternate_need << " or " << need << " from one of " << loc << dendl;
+	    dout(10) << " will pull " << alternate_need << " or " << need
+		     << " from one of " << missing_loc.get_locations(soid)
+		     << dendl;
 	    unfound = false;
 	  }
 	}
@@ -9307,8 +9313,7 @@ int ReplicatedPG::prep_object_replica_pushes(
       if (*i == get_primary()) continue;
       pg_shard_t peer = *i;
       if (!peer_missing[peer].is_missing(soid, v)) {
-	missing_loc[soid].insert(peer);
-	missing_loc_sources.insert(peer);
+	missing_loc.add_location(soid, peer);
 	dout(10) << info.pgid << " unexpectedly missing " << soid << " v" << v
 		 << ", there should be a copy on shard " << peer << dendl;
 	uhoh = false;
@@ -9318,7 +9323,8 @@ int ReplicatedPG::prep_object_replica_pushes(
       osd->clog.error() << info.pgid << " missing primary copy of " << soid << ", unfound\n";
     else
       osd->clog.error() << info.pgid << " missing primary copy of " << soid
-			<< ", will try copies on " << missing_loc[soid] << "\n";
+			<< ", will try copies on " << missing_loc.get_locations(soid)
+			<< "\n";
     return 0;
   }
 
@@ -9416,7 +9422,7 @@ int ReplicatedPG::recover_replicas(int max, ThreadPool::TPHandle &handle)
       }
 
       if (pg_log.get_missing().is_missing(soid)) {
-	if (missing_loc.find(soid) == missing_loc.end())
+	if (missing_loc.is_unfound(soid))
 	  dout(10) << __func__ << ": " << soid << " still unfound" << dendl;
 	else
 	  dout(10) << __func__ << ": " << soid << " still missing on primary" << dendl;
