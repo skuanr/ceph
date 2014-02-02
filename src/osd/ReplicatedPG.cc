@@ -10266,6 +10266,10 @@ void ReplicatedPG::agent_work(int start_max)
       dout(20) << __func__ << " skip (hit set) " << obc->obs.oi << dendl;
       continue;
     }
+    if (is_degraded_object(obc->obs.oi.soid)) {
+      dout(20) << __func__ << " skip (degraded) " << obc->obs.oi << dendl;
+      continue;
+    }
 
     if (agent_state->flush_mode != TierAgentState::FLUSH_MODE_IDLE &&
 	agent_maybe_flush(obc))
