@@ -1473,9 +1473,8 @@ void buffer::list::decode_base64(buffer::list& e)
   push_back(bp);
 }
 
-  
 
-int buffer::list::read_file(const char *fn, std::string *error)
+int buffer::list::read_file(const char *fn, std::string *error, size_t skip)
 {
   int fd = TEMP_FAILURE_RETRY(::open(fn, O_RDONLY));
   if (fd < 0) {
@@ -1490,7 +1489,16 @@ int buffer::list::read_file(const char *fn, std::string *error)
   memset(&st, 0, sizeof(st));
   ::fstat(fd, &st);
 
-  ssize_t ret = read_fd(fd, st.st_size);
+  ssize_t ret = ::lseek(fd, skip, SEEK_CUR);
+  if (ret < 0) {
+    int err = errno;
+    std::ostringstream oss;
+    oss << "can't seek to " << skip << " in " << fn << ": " << cpp_strerror(err);
+    *error = oss.str();
+    return -err;
+  }
+
+  ret = read_fd(fd, st.st_size);
   if (ret < 0) {
     std::ostringstream oss;
     oss << "bufferlist::read_file(" << fn << "): read error:"
@@ -1499,7 +1507,7 @@ int buffer::list::read_file(const char *fn, std::string *error)
     TEMP_FAILURE_RETRY(::close(fd));
     return ret;
   }
-  else if (ret != st.st_size) {
+  else if (ret != (st.st_size - skip)) {
     // Premature EOF.
     // Perhaps the file changed between stat() and read()?
     std::ostringstream oss;

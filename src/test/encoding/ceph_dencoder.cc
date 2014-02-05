@@ -253,6 +253,7 @@ int main(int argc, const char **argv)
   Dencoder *den = NULL;
   uint64_t features = CEPH_FEATURES_SUPPORTED_DEFAULT;
   bufferlist encbl;
+  uint64_t skip = 0;
 
   if (args.empty()) {
     usage(cerr);
@@ -285,6 +286,13 @@ int main(int argc, const char **argv)
       }
       den = dencoders[cname];
       den->generate();
+    } else if (*i == string("skip")) {
+      ++i;
+      if (i == args.end()) {
+	usage(cerr);
+	exit(1);
+      }
+      skip = atoi(*i);
     } else if (*i == string("get_features")) {
       cout << CEPH_FEATURES_SUPPORTED_DEFAULT << std::endl;
       exit(0);
@@ -343,7 +351,7 @@ int main(int argc, const char **argv)
 	usage(cerr);
 	exit(1);
       }
-      int r = encbl.read_file(*i, &err);
+      int r = encbl.read_file(*i, &err, skip);
       if (r < 0) {
         cerr << "error reading " << *i << ": " << err << std::endl;
         exit(1);

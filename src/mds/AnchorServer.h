@@ -73,7 +73,9 @@ class AnchorServer : public MDSTableServer {
     AnchorServer *me = const_cast<AnchorServer*>(this);
     me->encode_server_state(bl);
   }
-  void decode(bufferlist::iterator& bl) { decode_server_state(bl); }
+  void decode(bufferlist::iterator& bl) {
+    decode_server_state(bl);
+  }
 
   // server bits
   void _prepare(bufferlist &bl, uint64_t reqid, int bymds);

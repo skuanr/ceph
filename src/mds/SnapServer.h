@@ -67,6 +67,17 @@ public:
     DECODE_FINISH(bl);
   }
 
+  // To permit enc/decoding in isolation in dencoder
+  SnapServer() : MDSTableServer(NULL, TABLE_SNAP), last_checked_osdmap(0) {}
+  void encode(bufferlist& bl) const {
+    const_cast<SnapServer*>(this)->encode_server_state(bl);
+  }
+  void decode(bufferlist::iterator& bl) {
+    decode_server_state(bl);
+  }
+  void dump(Formatter *f) const;
+  static void generate_test_instances(list<SnapServer*>& ls);
+
   // server bits
   void _prepare(bufferlist &bl, uint64_t reqid, int bymds);
   bool _is_prepared(version_t tid);

@@ -430,7 +430,7 @@ public:
     void decode_base64(list& o);
 
     void hexdump(std::ostream &out) const;
-    int read_file(const char *fn, std::string *error);
+    int read_file(const char *fn, std::string *error, size_t skip=0);
     ssize_t read_fd(int fd, size_t len);
     int read_fd_zero_copy(int fd, size_t len);
     int write_file(const char *fn, int mode=0644);

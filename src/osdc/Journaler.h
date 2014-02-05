@@ -60,6 +60,7 @@ class CephContext;
 class Context;
 class PerfCounters;
 
+
 class Journaler {
 public:
   CephContext *cct;
@@ -97,6 +98,40 @@ public:
       ::decode(unused_field, bl);
       ::decode(write_pos, bl);
       ::decode(layout, bl);
+    }
+
+    // FIXME: is there a better location for this?
+    void dump_ceph_file_layout(ceph_file_layout const &cfl, Formatter *f) const
+    {
+      f->dump_unsigned("stripe_unit", cfl.fl_stripe_unit);
+      f->dump_unsigned("stripe_count", cfl.fl_stripe_unit);
+      f->dump_unsigned("object_size", cfl.fl_stripe_unit);
+      f->dump_unsigned("cas_hash", cfl.fl_stripe_unit);
+      f->dump_unsigned("object_stripe_unit", cfl.fl_stripe_unit);
+      f->dump_unsigned("pg_pool", cfl.fl_stripe_unit);
+    }
+
+    void dump(Formatter *f) const {
+      f->open_object_section("journal_header");
+      f->dump_string("magic", magic);
+      f->dump_unsigned("write_pos", write_pos);
+      f->dump_unsigned("expire_pos", expire_pos);
+      f->dump_unsigned("trimmed_pos", trimmed_pos);
+      f->open_object_section("layout");
+      dump_ceph_file_layout(layout, f);
+      f->close_section();
+      f->close_section();
+    }
+
+    static void generate_test_instances(list<Header*> &ls)
+    {
+      ls.push_back(new Header());
+      ls.push_back(new Header());
+      ls.back()->trimmed_pos = 1;
+      ls.back()->expire_pos = 2;
+      ls.back()->unused_field = 3;
+      ls.back()->write_pos = 4;
+      ls.back()->magic = "magique";
     }
   } last_written, last_committed;
   WRITE_CLASS_ENCODER(Header)

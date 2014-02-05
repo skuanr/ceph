@@ -55,6 +55,17 @@ class InoTable : public MDSTable {
     DECODE_FINISH(bl);
   }
 
+  // To permit enc/decoding in isolation in dencoder
+  InoTable() : MDSTable(NULL, "inotable", true) {}
+  void encode(bufferlist& bl) const {
+    const_cast<InoTable*>(this)->encode_state(bl);
+  }
+  void decode(bufferlist::iterator& bl) {
+    decode_state(bl);
+  }
+  void dump(Formatter *f) const;
+  static void generate_test_instances(list<InoTable*>& ls);
+
   void skip_inos(inodeno_t i);
 };
 
