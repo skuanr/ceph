@@ -9342,6 +9342,18 @@ bool ReplicatedPG::all_peer_done() const
   return true;
 }
 
+/* 
+ * Since head and snapdir can't both be true, there are times when we
+ * want to collapse them into a single value.  We can safely choose the
+ * larger of the 2 which is SNAPDIR.
+ */
+hobject_t normalize_hobject(const hobject_t &hoid)
+{
+  if (hoid.is_head())
+    return hoid.get_snapdir();
+  return hoid;
+}
+
 /**
  * recover_backfill
  *
@@ -9620,7 +9632,7 @@ int ReplicatedPG::recover_backfill(
        i != pending_backfill_updates.end() &&
 	 i->first < next_backfill_to_complete;
        pending_backfill_updates.erase(i++)) {
-    assert(i->first > new_last_backfill);
+    assert(normalize_hobject(i->first) > new_last_backfill);
     for (unsigned j = 0; j < backfill_targets.size(); ++j) {
       int bt = backfill_targets[j];
       pg_info_t& pinfo = peer_info[bt];
@@ -9632,15 +9644,13 @@ int ReplicatedPG::recover_backfill(
   }
   dout(10) << "possible new_last_backfill at " << new_last_backfill << dendl;
 
-  /* If last_backfill is snapdir, we know that head necessarily cannot exist,
-   * therefore it's safe to bump the snap up to NOSNAP.  This is necessary
-   * since we need avoid having SNAPDIR backfilled and HEAD not backfilled
-   * since a transaction on HEAD might change SNAPDIR
+  /*
+   * We need avoid having SNAPDIR backfilled and HEAD not backfilled
+   * since a transaction on HEAD might change SNAPDIR.  Collapsing
+   * HEAD and SNAPDIR into a single item.
    */
-  if (new_last_backfill.is_snapdir())
-    new_last_backfill = new_last_backfill.get_head();
-  if (last_backfill_started.is_snapdir())
-    last_backfill_started = last_backfill_started.get_head();
+  new_last_backfill = normalize_hobject(new_last_backfill);
+  last_backfill_started = normalize_hobject(last_backfill_started);
 
   assert(!pending_backfill_updates.empty() ||
 	 new_last_backfill == last_backfill_started);
