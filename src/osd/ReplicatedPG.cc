@@ -10238,6 +10238,9 @@ void ReplicatedPG::agent_work(int start_max)
 	   << ", pos " << agent_state->position
 	   << dendl;
 
+  const pg_pool_t *base_pool = get_osdmap()->get_pg_pool(pool.info.tier_of);
+  assert(base_pool);
+
   int ls_min = 1;
   int ls_max = 10; // FIXME?
 
@@ -10278,6 +10281,13 @@ void ReplicatedPG::agent_work(int start_max)
     }
     if (is_degraded_object(obc->obs.oi.soid)) {
       dout(20) << __func__ << " skip (degraded) " << obc->obs.oi << dendl;
+      continue;
+    }
+
+    // be careful flushing omap to an EC pool.
+    if (base_pool->is_erasure() &&
+	obc->obs.oi.test_flag(object_info_t::FLAG_OMAP)) {
+      dout(20) << __func__ << " skip (omap to EC) " << obc->obs.oi << dendl;
       continue;
     }
 
