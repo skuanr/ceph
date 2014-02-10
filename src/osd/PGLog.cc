@@ -269,7 +269,12 @@ bool PGLog::_merge_old_entry(
 	       << " new " << ne << " : same" << dendl;
       return true;
     }
-    if (oe.is_delete()) {
+    if (oe.mod_desc.can_rollback() && oe.version > olog_can_rollback_to) {
+      dout(20) << __func__ << ": ne.version < oe.version && can rollback, "
+	       << "rolling back " << oe << dendl;
+      if (rollbacker)
+	rollbacker->rollback(oe);
+    } else if (oe.is_delete()) {
       if (ne.is_delete()) {
 	// old and new are delete
 	dout(20) << "merge_old_entry  had " << oe
@@ -297,16 +302,9 @@ bool PGLog::_merge_old_entry(
 	// old update, new update
 	dout(20) << "merge_old_entry  had " << oe
 		 << " new " << ne << " : new item supercedes" << dendl;
-	if (oe.mod_desc.can_rollback() && oe.version > olog_can_rollback_to) {
-	  dout(20) << __func__ << ": ne.version < oe.version && can rollback, "
-		   << "rolling back " << oe << dendl;
-	  if (rollbacker)
-	    rollbacker->rollback(oe);
-	} else {
-	  missing.revise_need(ne.soid, ne.version);
-	  if (rollbacker)
-	    rollbacker->cant_rollback(oe);
-	}
+	missing.revise_need(ne.soid, ne.version);
+	if (rollbacker)
+	  rollbacker->cant_rollback(oe);
       }
     }
   } else if (oe.op == pg_log_entry_t::CLONE) {
