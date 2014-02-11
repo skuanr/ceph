@@ -148,7 +148,7 @@ void MDSTable::load_2(int r, bufferlist& bl, Context *onfinish)
     return;
   }
   if (r < 0) {
-    dout(10) << "load_2 could not read table: " << r << dendl;
+    dout(0) << "load_2 could not read table: " << r << dendl;
     assert(r >= 0);
   }
 
