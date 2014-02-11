@@ -1415,6 +1415,15 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op, ObjectContextRef obc,
     if (obc.get() && obc->obs.exists) {
       return false;
     }
+    if (agent_state &&
+	agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL) {
+      if (!op->may_write() && !op->may_cache()) {
+	dout(20) << __func__ << " cache pool full, redirecting read" << dendl;
+	do_cache_redirect(op, obc);
+	return true;
+      }
+      // FIXME: do something clever with writes.
+    }
     if (!must_promote && can_skip_promote(op, obc)) {
       return false;
     }
