@@ -49,13 +49,8 @@ bool Dumper::ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer,
 void Dumper::init(int rank) 
 {
   inodeno_t ino = MDS_INO_LOG_OFFSET + rank;
-  unsigned pg_pool = MDS_METADATA_POOL;
+  mdsmap = new MDSMap();
   osdmap = new OSDMap();
-  objecter = new Objecter(g_ceph_context, messenger, monc, osdmap, lock, timer);
-  journaler = new Journaler(ino, pg_pool, CEPH_FS_ONDISK_MAGIC,
-                                       objecter, 0, 0, &timer);
-
-  objecter->set_client_incarnation(0);
 
   messenger->add_dispatcher_head(this);
   messenger->start();
@@ -68,12 +63,37 @@ void Dumper::init(int rank)
   client_t whoami = monc->get_global_id();
   messenger->set_myname(entity_name_t::CLIENT(whoami.v));
 
+  // Initialize Objecter and wait for OSD map
+  objecter = new Objecter(g_ceph_context, messenger, monc, osdmap, lock, timer);
+  objecter->set_client_incarnation(0);
   objecter->init_unlocked();
   lock.Lock();
   objecter->init_locked();
   lock.Unlock();
   objecter->wait_for_osd_map();
   timer.init();
+
+  // Wait for MDS map
+  monc->sub_want("mdsmap", 0, CEPH_SUBSCRIBE_ONETIME);
+  monc->renew_subs();
+  if (!mdsmap->get_epoch()) {
+    dout(4) << "waiting for MDS map..." << dendl;
+    Mutex lock("");
+    Cond cond;
+    bool done;
+    lock.Lock();
+    waiting_for_mds_map = new C_SafeCond(&lock, &cond, &done, NULL);
+
+    while (!done)
+      cond.Wait(lock);
+    lock.Unlock();
+    dout(4) << "Got MDS map " << mdsmap->get_epoch() << dendl;
+  }
+
+  // Construct a journaller using pool info from the MDS map
+  journaler = new Journaler(ino, mdsmap->get_metadata_pool(), CEPH_FS_ONDISK_MAGIC,
+                                       objecter, 0, 0, &timer);
+
 }
 
 void Dumper::shutdown()
@@ -84,6 +104,36 @@ void Dumper::shutdown()
   lock.Unlock();
   objecter->shutdown_unlocked();
 }
+
+bool Dumper::ms_dispatch(Message *m)
+{
+   Mutex::Locker locker(lock);
+   switch (m->get_type()) {
+   case CEPH_MSG_OSD_OPREPLY:
+     objecter->handle_osd_op_reply((MOSDOpReply *)m);
+     break;
+   case CEPH_MSG_OSD_MAP:
+     objecter->handle_osd_map((MOSDMap*)m);
+     break;
+   case CEPH_MSG_MDS_MAP:
+     handle_mds_map((MMDSMap*)m);
+     break;
+   default:
+     return false;
+   }
+   return true;
+}
+
+
+void Dumper::handle_mds_map(MMDSMap* m)
+{
+  dout(10) << "got MDS map" << dendl;
+  mdsmap->decode(m->get_encoded());
+  if (waiting_for_mds_map) {
+    waiting_for_mds_map->complete(0);
+  }
+}
+
 
 void Dumper::dump(const char *dump_file)
 {
@@ -186,7 +236,6 @@ void Dumper::undump(const char *dump_file)
   cout << "start " << start << " len " << len << std::endl;
   
   inodeno_t ino = MDS_INO_LOG_OFFSET + rank;
-  unsigned pg_pool = MDS_METADATA_POOL;
 
   Journaler::Header h;
   h.trimmed_pos = start;
@@ -195,13 +244,13 @@ void Dumper::undump(const char *dump_file)
   h.magic = CEPH_FS_ONDISK_MAGIC;
 
   h.layout = g_default_file_layout;
-  h.layout.fl_pg_pool = pg_pool;
+  h.layout.fl_pg_pool = mdsmap->get_metadata_pool();
   
   bufferlist hbl;
   ::encode(h, hbl);
 
   object_t oid = file_object_t(ino, 0);
-  object_locator_t oloc(pg_pool);
+  object_locator_t oloc(mdsmap->get_metadata_pool());
   SnapContext snapc;
 
   bool done = false;
