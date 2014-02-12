@@ -1422,7 +1422,9 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op, ObjectContextRef obc,
 	do_cache_redirect(op, obc);
 	return true;
       }
-      // FIXME: do something clever with writes.
+      dout(20) << __func__ << " cache pool full, waiting" << dendl;
+      waiting_for_cache_not_full.push_back(op);
+      return true;
     }
     if (!must_promote && can_skip_promote(op, obc)) {
       return false;
@@ -8781,10 +8783,13 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
       p->second.clear();
   }
 
-  if (is_primary())
+  if (is_primary()) {
+    requeue_ops(waiting_for_cache_not_full);
     requeue_ops(waiting_for_all_missing);
-  else
+  } else {
+    waiting_for_cache_not_full.clear();
     waiting_for_all_missing.clear();
+  }
 
   // this will requeue ops we were working on but didn't finish, and
   // any dups
@@ -10540,6 +10545,9 @@ bool ReplicatedPG::agent_choose_mode()
 	    << " -> "
 	    << TierAgentState::get_evict_mode_name(evict_mode)
 	    << dendl;
+    if (agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL) {
+      requeue_ops(waiting_for_cache_not_full);
+    }
     agent_state->evict_mode = evict_mode;
     changed = true;
   }
