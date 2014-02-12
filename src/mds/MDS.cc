@@ -1617,9 +1617,9 @@ void MDS::stopping_start()
     // we're the only mds up!
     dout(0) << "we are the last MDS, and have mounted clients: we cannot flush our journal.  suicide!" << dendl;
     suicide();
+  } else {
+    mdcache->shutdown_start();
   }
-
-  mdcache->shutdown_start();
 }
 
 void MDS::stopping_done()
@@ -2053,7 +2053,7 @@ bool MDS::_dispatch(Message *m)
   }
 
   // shut down?
-  if (is_stopping()) {
+  if (is_stopping() && want_state != CEPH_MDS_STATE_DNE) {
     mdlog->trim();
     if (mdcache->shutdown_pass()) {
       dout(7) << "shutdown_pass=true, finished w/ shutdown, moving to down:stopped" << dendl;
