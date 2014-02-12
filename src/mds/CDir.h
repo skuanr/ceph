@@ -327,12 +327,7 @@ protected:
 
   // -- dentries and inodes --
  public:
-  CDentry* lookup_exact_snap(const string& dname, snapid_t last) {
-    map_t::iterator p = items.find(dentry_key_t(last, dname.c_str()));
-    if (p == items.end())
-      return NULL;
-    return p->second;
-  }
+  CDentry* lookup_exact_snap(const string& dname, snapid_t last);
   CDentry* lookup(const string& n, snapid_t snap=CEPH_NOSNAP) {
     return lookup(n.c_str(), snap);
   }

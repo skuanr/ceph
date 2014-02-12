@@ -539,8 +539,9 @@ WRITE_CLASS_ENCODER(session_info_t)
 struct dentry_key_t {
   snapid_t snapid;
   const char *name;
-  dentry_key_t() : snapid(0), name(0) {}
-  dentry_key_t(snapid_t s, const char *n) : snapid(s), name(n) {}
+  __u32 hash;
+  // dentry_key_t() : snapid(0), name(0), hash(0) {}
+  dentry_key_t(snapid_t s, const char *n, __u32 h) : snapid(s), name(n), hash(h) {}
 
   // encode into something that can be decoded as a string.
   // name_ (head) or name_%x (!head)
@@ -590,11 +591,14 @@ inline ostream& operator<<(ostream& out, const dentry_key_t &k)
 inline bool operator<(const dentry_key_t& k1, const dentry_key_t& k2)
 {
   /*
-   * order by name, then snap
+   * order by hash, name, snap
    */
+  if (k1.hash != k2.hash)
+    return k1.hash < k2.hash;
   int c = strcmp(k1.name, k2.name);
-  return 
-    c < 0 || (c == 0 && k1.snapid < k2.snapid);
+  if (c)
+    return c < 0;
+  return k1.snapid < k2.snapid;
 }
 
 

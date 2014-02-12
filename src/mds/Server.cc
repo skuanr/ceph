@@ -2816,12 +2816,19 @@ void Server::handle_client_readdir(MDRequest *mdr)
   string offset_str = req->get_path2();
   dout(10) << " frag " << fg << " offset '" << offset_str << "'" << dendl;
 
+  __u32 offset_hash = 0;
+  if (!offset_str.empty())
+    offset_hash = diri->hash_dentry_name(offset_str);
+
   // does the frag exist?
   if (diri->dirfragtree[fg.value()] != fg) {
-    frag_t newfg = diri->dirfragtree[fg.value()];
+    frag_t newfg;
+    if (offset_str.empty())
+      newfg = diri->dirfragtree[fg.value()];
+    else
+      newfg = diri->dirfragtree[offset_hash];
     dout(10) << " adjust frag " << fg << " -> " << newfg << " " << diri->dirfragtree << dendl;
     fg = newfg;
-    offset_str.clear();
   }
   
   CDir *dir = try_open_auth_dirfrag(diri, fg, mdr);
@@ -2906,8 +2913,12 @@ void Server::handle_client_readdir(MDRequest *mdr)
       continue;
     }
 
-    if (!offset_str.empty() && dn->get_name().compare(offset_str) <= 0)
-      continue;
+    if (!offset_str.empty()) {
+      if (dn->get_hash() < offset_hash)
+	continue;
+      if (dn->get_hash() == offset_hash && dn->get_name().compare(offset_str) <= 0)
+	continue;
+    }
 
     CInode *in = dnl->get_inode();
 
