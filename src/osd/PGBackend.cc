@@ -18,7 +18,7 @@
 #include "ECBackend.h"
 #include "PGBackend.h"
 #include "OSD.h"
-#include "ErasureCodePlugin.h"
+#include "erasure-code/ErasureCodePlugin.h"
 
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this

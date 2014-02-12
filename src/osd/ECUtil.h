@@ -18,7 +18,7 @@
 #include <map>
 #include <set>
 
-#include "ErasureCodeInterface.h"
+#include "erasure-code/ErasureCodeInterface.h"
 #include "include/buffer.h"
 #include "include/assert.h"
 
