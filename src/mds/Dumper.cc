@@ -22,128 +22,35 @@
 #include "common/safe_io.h"
 #include "mds/Dumper.h"
 #include "mds/mdstypes.h"
-#include "mon/MonClient.h"
 #include "osdc/Journaler.h"
 
 #define dout_subsys ceph_subsys_mds
 
-Dumper::~Dumper()
-{
-}
 
-bool Dumper::ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer,
-                         bool force_new)
+int Dumper::init(int rank_)
 {
-  if (dest_type == CEPH_ENTITY_TYPE_MON)
-    return true;
+  rank = rank_;
 
-  if (force_new) {
-    if (monc->wait_auth_rotating(10) < 0)
-      return false;
+  int r = MDSUtility::init();
+  if (r < 0) {
+    return r;
   }
 
-  *authorizer = monc->auth->build_authorizer(dest_type);
-  return *authorizer != NULL;
-}
-
-void Dumper::init(int rank) 
-{
   inodeno_t ino = MDS_INO_LOG_OFFSET + rank;
-  mdsmap = new MDSMap();
-  osdmap = new OSDMap();
-
-  messenger->add_dispatcher_head(this);
-  messenger->start();
-
-  monc->set_want_keys(CEPH_ENTITY_TYPE_MON|CEPH_ENTITY_TYPE_OSD|CEPH_ENTITY_TYPE_MDS);
-  monc->set_messenger(messenger);
-  monc->init();
-  monc->authenticate();
-
-  client_t whoami = monc->get_global_id();
-  messenger->set_myname(entity_name_t::CLIENT(whoami.v));
-
-  // Initialize Objecter and wait for OSD map
-  objecter = new Objecter(g_ceph_context, messenger, monc, osdmap, lock, timer);
-  objecter->set_client_incarnation(0);
-  objecter->init_unlocked();
-  lock.Lock();
-  objecter->init_locked();
-  lock.Unlock();
-  objecter->wait_for_osd_map();
-  timer.init();
-
-  // Wait for MDS map
-  monc->sub_want("mdsmap", 0, CEPH_SUBSCRIBE_ONETIME);
-  monc->renew_subs();
-  if (!mdsmap->get_epoch()) {
-    dout(4) << "waiting for MDS map..." << dendl;
-    Mutex lock("");
-    Cond cond;
-    bool done;
-    lock.Lock();
-    waiting_for_mds_map = new C_SafeCond(&lock, &cond, &done, NULL);
-
-    while (!done)
-      cond.Wait(lock);
-    lock.Unlock();
-    dout(4) << "Got MDS map " << mdsmap->get_epoch() << dendl;
-  }
-
-  // Construct a journaller using pool info from the MDS map
   journaler = new Journaler(ino, mdsmap->get_metadata_pool(), CEPH_FS_ONDISK_MAGIC,
                                        objecter, 0, 0, &timer);
-
-}
-
-void Dumper::shutdown()
-{
-  lock.Lock();
-  timer.shutdown();
-  objecter->shutdown_locked();
-  lock.Unlock();
-  objecter->shutdown_unlocked();
-}
-
-bool Dumper::ms_dispatch(Message *m)
-{
-   Mutex::Locker locker(lock);
-   switch (m->get_type()) {
-   case CEPH_MSG_OSD_OPREPLY:
-     objecter->handle_osd_op_reply((MOSDOpReply *)m);
-     break;
-   case CEPH_MSG_OSD_MAP:
-     objecter->handle_osd_map((MOSDMap*)m);
-     break;
-   case CEPH_MSG_MDS_MAP:
-     handle_mds_map((MMDSMap*)m);
-     break;
-   default:
-     return false;
-   }
-   return true;
-}
-
-
-void Dumper::handle_mds_map(MMDSMap* m)
-{
-  dout(10) << "got MDS map" << dendl;
-  mdsmap->decode(m->get_encoded());
-  if (waiting_for_mds_map) {
-    waiting_for_mds_map->complete(0);
-  }
+  return 0;
 }
 
 
 void Dumper::dump(const char *dump_file)
 {
   bool done = false;
-  Cond cond;
   int r = 0;
-  int rank = strtol(g_conf->name.get_id().c_str(), 0, 0);
-  inodeno_t ino = MDS_INO_LOG_OFFSET + rank;
 
+  Cond cond;
   Mutex localLock("dump:lock");
+
   lock.Lock();
   journaler->recover(new C_SafeCond(&localLock, &cond, &done, &r));
   lock.Unlock();
@@ -154,7 +61,6 @@ void Dumper::dump(const char *dump_file)
 
   if (r < 0) { // Error
     derr << "error on recovery: " << cpp_strerror(r) << dendl;
-    shutdown();
   } else {
     dout(10) << "completed journal recovery" << dendl;
   }
@@ -162,10 +68,13 @@ void Dumper::dump(const char *dump_file)
   uint64_t start = journaler->get_read_pos();
   uint64_t end = journaler->get_write_pos();
   uint64_t len = end-start;
+  inodeno_t ino = MDS_INO_LOG_OFFSET + rank;
+
   cout << "journal is " << start << "~" << len << std::endl;
 
   Filer filer(objecter);
   bufferlist bl;
+
   lock.Lock();
   filer.read(ino, &journaler->get_layout(), CEPH_NOSNAP,
              start, len, &bl, 0, new C_SafeCond(&localLock, &cond, &done));
@@ -204,8 +113,6 @@ void Dumper::dump(const char *dump_file)
     int err = errno;
     derr << "unable to open " << dump_file << ": " << cpp_strerror(err) << dendl;
   }
-
-  shutdown();
 }
 
 void Dumper::undump(const char *dump_file)
@@ -290,5 +197,3 @@ void Dumper::undump(const char *dump_file)
   TEMP_FAILURE_RETRY(::close(fd));
   cout << "done." << std::endl;
 }
-
-

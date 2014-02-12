@@ -40,7 +40,7 @@ public:
 
   void encode(bufferlist& bl) const;
   void decode(bufferlist::iterator& bl);
-  void dump(Formatter *f) const;
+  virtual void dump(Formatter *f) const;
   static void generate_test_instances(list<EUpdate*>& ls);
 
   void update_segment();

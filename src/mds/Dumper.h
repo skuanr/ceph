@@ -14,14 +14,9 @@
 #ifndef JOURNAL_DUMPER_H_
 #define JOURNAL_DUMPER_H_
 
-#include "osd/OSDMap.h"
-#include "osdc/Objecter.h"
+
+#include "mds/MDSUtility.h"
 #include "osdc/Journaler.h"
-#include "mds/MDSMap.h"
-#include "messages/MMDSMap.h"
-#include "msg/Dispatcher.h"
-#include "msg/Messenger.h"
-#include "auth/Auth.h"
 
 /**
  * This class lets you dump out an mds journal for troubleshooting or whatever.
@@ -31,51 +26,18 @@
  * of the file to dump to.
  */
 
-class Dumper : public Dispatcher {
-public:
-  Objecter *objecter;
+class Dumper : public MDSUtility {
+private:
   Journaler *journaler;
-  OSDMap *osdmap;
-  MDSMap *mdsmap;
-  Messenger *messenger;
-  MonClient *monc;
-  Context *waiting_for_mds_map;
-  Mutex lock;
-  SafeTimer timer;
-
   int rank;
 
-  /*
-   * The messenger should be a valid Messenger. You should call bind()
-   * before passing it in, but not do anything else.
-   * The MonClient needs to be valid, and you should have called
-   * build_initial_monmap().
-   */
-  Dumper(Messenger *messenger_, MonClient *monc_) :
-    Dispatcher(messenger_->cct),
-    objecter(NULL),
-    journaler(NULL),
-    osdmap(NULL),
-    mdsmap(NULL),
-    messenger(messenger_),
-    monc(monc_),
-    waiting_for_mds_map(NULL),
-    lock("Dumper::lock"),
-    timer(g_ceph_context, lock),
-    rank(-1)
-  { }
-
-  virtual ~Dumper();
+public:
+  Dumper() : journaler(NULL), rank(-1)
+  {}
 
   void handle_mds_map(MMDSMap* m);
 
-  bool ms_dispatch(Message *m);
-  bool ms_handle_reset(Connection *con) { return false; }
-  void ms_handle_remote_reset(Connection *con) {}
-  bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer,
-                         bool force_new);
-  void init(int rank);
-  void shutdown();
+  int init(int rank);
   void dump(const char *dumpfile);
   void undump(const char *dumpfile);
 };

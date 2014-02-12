@@ -112,4 +112,3 @@ LogEvent *LogEvent::decode_event(bufferlist& bl, bufferlist::iterator& p, __u32 
   assert(p.end());
   return le;
 }
-
