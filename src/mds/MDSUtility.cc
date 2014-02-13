@@ -45,6 +45,8 @@ MDSUtility::~MDSUtility()
 
 int MDSUtility::init()
 {
+  dout(4) << __func__ << dendl;
+
   // Initialize Messenger
   int r = messenger->bind(g_conf->public_addr);
   if (r < 0)
@@ -100,6 +102,8 @@ int MDSUtility::init()
 
 void MDSUtility::shutdown()
 {
+  dout(4) << __func__ << dendl;
+
   lock.Lock();
   timer.shutdown();
   objecter->shutdown_locked();
@@ -114,6 +118,7 @@ void MDSUtility::shutdown()
 bool MDSUtility::ms_dispatch(Message *m)
 {
    Mutex::Locker locker(lock);
+   dout(10) << __func__ << " type: " << m->get_type_name() << dendl;
    switch (m->get_type()) {
    case CEPH_MSG_OSD_OPREPLY:
      objecter->handle_osd_op_reply((MOSDOpReply *)m);

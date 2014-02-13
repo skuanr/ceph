@@ -29,6 +29,7 @@ using namespace std;
 #include "mds/MDS.h"
 #include "mds/Dumper.h"
 #include "mds/Resetter.h"
+#include "mds/InoUtility.h"
 
 #include "msg/Messenger.h"
 
@@ -69,7 +70,9 @@ void usage()
 }
 
 static int do_cmds_special_action(const std::string &action,
-				  const std::string &dump_file, int rank)
+				  const std::string &dump_file,
+				  int rank,
+				  uint64_t arg1)
 {
   common_init_finish(g_ceph_context, CINIT_FLAG_NO_DAEMON_ACTIONS);
 
@@ -96,6 +99,11 @@ static int do_cmds_special_action(const std::string &action,
     resetter.init(rank);
     resetter.reset();
     resetter.shutdown();
+  } else if (action == "ino-by-id") {
+    InoUtility inou;
+    inou.init();
+    inou.by_id(arg1);
+    inou.shutdown();
   } else {
     assert(0);
   }
@@ -149,6 +157,9 @@ int main(int argc, const char **argv)
   int rank = -1;
   std::string dump_file;
 
+  // Hack until CLI stuff generalized
+  uint64_t arg1 = 0;
+
   std::string val, action;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
@@ -179,6 +190,10 @@ int main(int argc, const char **argv)
     else if (ceph_argparse_witharg(args, i, &val, "--dump-journal-entries", (char*)NULL)){
       set_special_action(action, "dump-journal-entries");
       rank = parse_rank("dump-journal-entries", val);
+    }
+    else if (ceph_argparse_witharg(args, i, &val, "--ino-by-id", (char*)NULL)){
+      set_special_action(action, "ino-by-id");
+      arg1 = strtoll(val.c_str(), NULL, 0);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--reset-journal", (char*)NULL)) {
       set_special_action(action, "reset-journal");
@@ -220,7 +235,7 @@ int main(int argc, const char **argv)
 
   // Check for special actions
   if (!action.empty()) {
-    return do_cmds_special_action(action, dump_file, rank);
+    return do_cmds_special_action(action, dump_file, rank, arg1);
   }
 
   // Normal startup

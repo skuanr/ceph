@@ -28,7 +28,8 @@ libmds_la_SOURCES = \
 	mds/snap.cc \
 	mds/SessionMap.cc \
 	mds/MDLog.cc \
-	mds/MDSUtility.cc
+	mds/MDSUtility.cc \
+	mds/InoUtility.cc
 libmds_la_LIBADD = $(LIBOSDC)
 noinst_LTLIBRARIES += libmds.la
 
@@ -46,6 +47,7 @@ noinst_HEADERS += \
 	mds/Capability.h \
 	mds/Dumper.h \
 	mds/InoTable.h \
+	mds/InoUtility.h \
 	mds/LocalLock.h \
 	mds/Locker.h \
 	mds/LogEvent.h \
