@@ -79,6 +79,11 @@ static int do_cmds_special_action(const std::string &action,
     journal_dumper.init(rank);
     journal_dumper.dump(dump_file.c_str());
     journal_dumper.shutdown();
+  } else if (action == "dump-journal-entries") {
+    Dumper journal_dumper;
+    journal_dumper.init(rank);
+    journal_dumper.dump_entries();
+    journal_dumper.shutdown();
   } else if (action == "undump-journal") {
     dout(0) << "undumping journal for mds." << rank << " from " << dump_file << dendl;
     Dumper journal_dumper;
@@ -170,6 +175,10 @@ int main(int argc, const char **argv)
 	usage();
       }
       dump_file = *i++;
+    }
+    else if (ceph_argparse_witharg(args, i, &val, "--dump-journal-entries", (char*)NULL)){
+      set_special_action(action, "dump-journal-entries");
+      rank = parse_rank("dump-journal-entries", val);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--reset-journal", (char*)NULL)) {
       set_special_action(action, "reset-journal");
