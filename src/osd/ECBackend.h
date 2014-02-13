@@ -279,6 +279,7 @@ public:
   friend ostream &operator<<(ostream &lhs, const read_request_t &rhs);
 
   struct ReadOp {
+    int priority;
     tid_t tid;
     OpRequestRef op; // may be null if not on behalf of a client
 
@@ -301,6 +302,7 @@ public:
   map<tid_t, ReadOp> tid_to_read_map;
   map<pg_shard_t, set<tid_t> > shard_to_read_map;
   void start_read_op(
+    int priority,
     map<hobject_t, read_request_t> &to_read,
     OpRequestRef op);
 
@@ -350,7 +352,7 @@ public:
     RecoveryOp &op,
     RecoveryMessages *m);
 
-  void dispatch_recovery_messages(RecoveryMessages &m);
+  void dispatch_recovery_messages(RecoveryMessages &m, int priority);
   friend struct OnRecoveryReadComplete;
   void handle_recovery_read_cancel(
     const hobject_t &hoid);

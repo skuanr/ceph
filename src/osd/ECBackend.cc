@@ -97,6 +97,7 @@ ostream &operator<<(ostream &lhs, const ECBackend::ReadOp &rhs)
   }
   return lhs << ", to_read=" << rhs.to_read
 	     << ", complete=" << rhs.complete
+	     << ", priority=" << rhs.priority
 	     << ", obj_to_source=" << rhs.obj_to_source
 	     << ", source_to_obj=" << rhs.source_to_obj
 	     << ", in_progress=" << rhs.in_progress << ")";
@@ -110,6 +111,7 @@ void ECBackend::ReadOp::dump(Formatter *f) const
   }
   f->dump_stream("to_read") << to_read;
   f->dump_stream("complete") << complete;
+  f->dump_stream("priority") << priority;
   f->dump_stream("obj_to_source") << obj_to_source;
   f->dump_stream("source_to_obj") << source_to_obj;
   f->dump_stream("in_progress") << in_progress;
@@ -409,12 +411,13 @@ struct SendPushReplies : public Context {
   }
 };
 
-void ECBackend::dispatch_recovery_messages(RecoveryMessages &m)
+void ECBackend::dispatch_recovery_messages(RecoveryMessages &m, int priority)
 {
   for (map<pg_shard_t, vector<PushOp> >::iterator i = m.pushes.begin();
        i != m.pushes.end();
        m.pushes.erase(i++)) {
     MOSDPGPush *msg = new MOSDPGPush();
+    msg->set_priority(priority);
     msg->map_epoch = get_parent()->get_epoch();
     msg->from = get_parent()->whoami_shard();
     msg->pgid = spg_t(get_parent()->get_info().pgid.pgid, i->first.shard);
@@ -430,6 +433,7 @@ void ECBackend::dispatch_recovery_messages(RecoveryMessages &m)
        i != m.push_replies.end();
        m.push_replies.erase(i++)) {
     MOSDPGPushReply *msg = new MOSDPGPushReply();
+    msg->set_priority(priority);
     msg->map_epoch = get_parent()->get_epoch();
     msg->from = get_parent()->whoami_shard();
     msg->pgid = spg_t(get_parent()->get_info().pgid.pgid, i->first.shard);
@@ -448,6 +452,7 @@ void ECBackend::dispatch_recovery_messages(RecoveryMessages &m)
   if (m.reads.empty())
     return;
   start_read_op(
+    priority,
     m.reads,
     OpRequestRef());
 }
@@ -588,7 +593,7 @@ void ECBackend::run_recovery_op(
     RecoveryOp &op = recovery_ops.insert(make_pair(i->hoid, *i)).first->second;
     continue_recovery_op(op, &m);
   }
-  dispatch_recovery_messages(m);
+  dispatch_recovery_messages(m, priority);
   delete _h;
 }
 
@@ -634,6 +639,7 @@ bool ECBackend::handle_message(
   OpRequestRef _op)
 {
   dout(10) << __func__ << ": " << *_op->get_req() << dendl;
+  int priority = _op->get_req()->get_priority();
   switch (_op->get_req()->get_type()) {
   case MSG_OSD_EC_WRITE: {
     MOSDECSubOpWrite *op = static_cast<MOSDECSubOpWrite*>(_op->get_req());
@@ -643,6 +649,7 @@ bool ECBackend::handle_message(
   case MSG_OSD_EC_WRITE_REPLY: {
     MOSDECSubOpWriteReply *op = static_cast<MOSDECSubOpWriteReply*>(
       _op->get_req());
+    op->set_priority(priority);
     handle_sub_write_reply(op->op.from, op->op);
     return true;
   }
@@ -652,6 +659,7 @@ bool ECBackend::handle_message(
     reply->pgid = get_parent()->primary_spg_t();
     reply->map_epoch = get_parent()->get_epoch();
     handle_sub_read(op->op.from, op->op, &(reply->op));
+    op->set_priority(priority);
     get_parent()->send_message_osd_cluster(
       op->op.from.osd, reply, get_parent()->get_epoch());
     return true;
@@ -661,7 +669,7 @@ bool ECBackend::handle_message(
       _op->get_req());
     RecoveryMessages rm;
     handle_sub_read_reply(op->op.from, op->op, &rm);
-    dispatch_recovery_messages(rm);
+    dispatch_recovery_messages(rm, priority);
     return true;
   }
   case MSG_OSD_PG_PUSH: {
@@ -672,7 +680,7 @@ bool ECBackend::handle_message(
 	 ++i) {
       handle_recovery_push(*i, &rm);
     }
-    dispatch_recovery_messages(rm);
+    dispatch_recovery_messages(rm, priority);
     return true;
   }
   case MSG_OSD_PG_PUSH_REPLY: {
@@ -683,7 +691,7 @@ bool ECBackend::handle_message(
 	 ++i) {
       handle_recovery_push_reply(*i, op->from, &rm);
     }
-    dispatch_recovery_messages(rm);
+    dispatch_recovery_messages(rm, priority);
     return true;
   }
   default:
@@ -982,9 +990,10 @@ struct FinishReadOp : public GenContext<ThreadPool::TPHandle&>  {
   FinishReadOp(ECBackend *ec, tid_t tid) : ec(ec), tid(tid) {}
   void finish(ThreadPool::TPHandle &handle) {
     assert(ec->tid_to_read_map.count(tid));
+    int priority = ec->tid_to_read_map[tid].priority;
     RecoveryMessages rm;
     ec->complete_read_op(ec->tid_to_read_map[tid], &rm);
-    ec->dispatch_recovery_messages(rm);
+    ec->dispatch_recovery_messages(rm, priority);
   }
 };
 
@@ -1223,12 +1232,14 @@ int ECBackend::get_min_avail_to_read_shards(
 }
 
 void ECBackend::start_read_op(
+  int priority,
   map<hobject_t, read_request_t> &to_read,
   OpRequestRef _op)
 {
   tid_t tid = get_parent()->get_tid();
   assert(!tid_to_read_map.count(tid));
   ReadOp &op(tid_to_read_map[tid]);
+  op.priority = priority;
   op.tid = tid;
   op.to_read.swap(to_read);
   op.op = _op;
@@ -1280,6 +1291,7 @@ void ECBackend::start_read_op(
     shard_to_read_map[i->first].insert(op.tid);
     i->second.tid = tid;
     MOSDECSubOpRead *msg = new MOSDECSubOpRead;
+    msg->set_priority(priority);
     msg->pgid = spg_t(
       get_parent()->whoami_spg_t().pgid,
       i->first.shard);
@@ -1505,6 +1517,7 @@ void ECBackend::objects_read_async(
 	c)));
 
   start_read_op(
+    cct->_conf->osd_client_op_priority,
     for_read_op,
     OpRequestRef());
   return;
