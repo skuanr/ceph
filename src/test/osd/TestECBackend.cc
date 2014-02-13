@@ -55,6 +55,6 @@ TEST(ECUtil, stripe_info_t)
   ASSERT_EQ(s.aligned_offset_len_to_chunk(make_pair(swidth, 10*swidth)),
 	    make_pair(s.get_chunk_size(), 10*s.get_chunk_size()));
 
-  ASSERT_EQ(s.offset_len_to_stripe_bounds(make_pair(swidth-10U, 20UL)),
-	    make_pair(0UL, 2U*swidth));
+  ASSERT_EQ(s.offset_len_to_stripe_bounds(make_pair(swidth-10, 20)),
+	    make_pair(0, 2*swidth));
 }
