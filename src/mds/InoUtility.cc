@@ -19,6 +19,7 @@ void InoUtility::by_path(std::string const &path)
 
 void InoUtility::by_id(inodeno_t const id)
 {
+  dout(4) << __func__ << dendl;
   // Go get the backtrace object, then follow
 
   // Resolve inode ID to object ID
@@ -65,6 +66,7 @@ void InoUtility::by_id(inodeno_t const id)
 
   Rados rados;
   rados.init("admin");
+  rados.conf_read_file("./ceph.conf");
   rados.connect();
   IoCtx ioctx;
   // FIXME this takes pool by name, we have ID

@@ -29,7 +29,6 @@ using namespace std;
 #include "mds/MDS.h"
 #include "mds/Dumper.h"
 #include "mds/Resetter.h"
-#include "mds/InoUtility.h"
 
 #include "msg/Messenger.h"
 
@@ -99,11 +98,11 @@ static int do_cmds_special_action(const std::string &action,
     resetter.init(rank);
     resetter.reset();
     resetter.shutdown();
-  } else if (action == "ino-by-id") {
-    InoUtility inou;
-    inou.init();
-    inou.by_id(arg1);
-    inou.shutdown();
+//  } else if (action == "ino-by-id") {
+//    InoUtility inou;
+//    inou.init();
+//    inou.by_id(arg1);
+//    inou.shutdown();
   } else {
     assert(0);
   }
