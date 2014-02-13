@@ -5,6 +5,9 @@
 #include "mds/inode_backtrace.h"
 
 
+#include "include/rados/librados.hpp"
+using namespace librados;
+
 #define dout_subsys ceph_subsys_mds
 
 
@@ -27,34 +30,47 @@ void InoUtility::by_id(inodeno_t const id)
 
   // RADOS xattr read to obtain backtrace
   bufferlist parent_bl;
-  ObjectOperation rd_parent;
+//  ObjectOperation rd_parent;
 
   // FIXME: this is a faff, can I use synchronous librados ops or something?
-  int r;
-  bool done = false;
-  Cond cond;
-
-  // We need a separate lock for use with SafeCond, because it
-  // takes the lock in completion, and we already hold .lock
-  // while dispatching messages causing completion.
-  Mutex localLock("dump:lock");
-  C_SafeCond *c = new C_SafeCond(&localLock, &cond, &done, &r);
-
-  rd_parent.getxattr("parent", &parent_bl, NULL);
-
-  dout(4) << "Sending xattr read for object " << oid << dendl;
+//  int r;
+//  bool done = false;
+//  Cond cond;
+//
+//  // We need a separate lock for use with SafeCond, because it
+//  // takes the lock in completion, and we already hold .lock
+//  // while dispatching messages causing completion.
+//  Mutex localLock("dump:lock");
+//  C_SafeCond *c = new C_SafeCond(&localLock, &cond, &done, &r);
+//
+//  rd_parent.getxattr("parent", &parent_bl, NULL);
+//
+//  dout(4) << "Sending xattr read for object " << oid << dendl;
 
   // Take the lock while doing remote ops.
-  lock.Lock();
-  objecter->read(oid, oloc, rd_parent, CEPH_NOSNAP, NULL, 0, c);
-  lock.Unlock();
+//  lock.Lock();
+//  objecter->read(oid, oloc, rd_parent, CEPH_NOSNAP, NULL, 0, c);
+//  lock.Unlock();
+//
+//  // Wait for xattr read
+//  localLock.Lock();
+//  while (!done) {
+//    cond.Wait(localLock);
+//  }
+//  localLock.Unlock();
+//  if (r < 0) {
+//    dout(0) << "Error getting xattr: " << r << dendl;
+//    return;
+//  }
 
-  // Wait for xattr read
-  localLock.Lock();
-  while (!done) {
-    cond.Wait(localLock);
-  }
-  localLock.Unlock();
+  Rados rados;
+  rados.init("admin");
+  rados.connect();
+  IoCtx ioctx;
+  // FIXME this takes pool by name, we have ID
+  rados.ioctx_create("metadata", ioctx);
+  int r = ioctx.getxattr(oid.name, "parent", parent_bl);
+  rados.shutdown();
   if (r < 0) {
     dout(0) << "Error getting xattr: " << r << dendl;
     return;
