@@ -29,7 +29,7 @@ public:
 
   epoch_t get_epoch() { return epoch; }
 
-  MOSDPGTrim() : Message(MSG_OSD_PG_TRIM) {}
+  MOSDPGTrim() : Message(MSG_OSD_PG_TRIM, HEAD_VERSION, COMPAT_VERSION) {}
   MOSDPGTrim(version_t mv, spg_t p, eversion_t tt) :
     Message(MSG_OSD_PG_TRIM),
     epoch(mv), pgid(p), trim_to(tt) { }
@@ -54,7 +54,7 @@ public:
     ::decode(pgid.pgid, p);
     ::decode(trim_to, p);
     if (header.version >= 2)
-      ::decode(pgid.shard, payload);
+      ::decode(pgid.shard, p);
     else
       pgid.shard = ghobject_t::no_shard();
   }
