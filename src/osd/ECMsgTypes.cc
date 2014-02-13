@@ -280,7 +280,7 @@ void ECSubReadReply::dump(Formatter *f) const
        i != attrs_read.end();
        ++i) {
     f->open_object_section("object_attrs");
-    f->dump_stream("oid") << *i;
+    f->dump_stream("oid") << i->first;
     f->open_array_section("attrs");
     for (map<string, bufferlist>::const_iterator j = i->second.begin();
 	 j != i->second.end();
