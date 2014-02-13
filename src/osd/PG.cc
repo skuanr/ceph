@@ -2588,8 +2588,10 @@ void PG::trim_peers()
       if (*i == pg_whoami) continue;
       osd->send_message_osd_cluster(
 	i->osd,
-	new MOSDPGTrim(get_osdmap()->get_epoch(), info.pgid,
-		       pg_trim_to),
+	new MOSDPGTrim(
+	  get_osdmap()->get_epoch(),
+	  spg_t(info.pgid.pgid, i->shard),
+	  pg_trim_to),
 	get_osdmap()->get_epoch());
     }
   }

@@ -8269,7 +8269,9 @@ void ReplicatedPG::_committed_pushed_object(
 	// we are fully up to date.  tell the primary!
 	osd->send_message_osd_cluster(
 	  get_primary().osd,
-	  new MOSDPGTrim(get_osdmap()->get_epoch(), info.pgid,
+	  new MOSDPGTrim(
+	    get_osdmap()->get_epoch(),
+	    spg_t(info.pgid.pgid, primary.shard),
 	    last_complete_ondisk),
 	  get_osdmap()->get_epoch());
       } else {
