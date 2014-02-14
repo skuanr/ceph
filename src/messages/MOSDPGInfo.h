@@ -80,7 +80,7 @@ public:
       ::encode(pair<epoch_t, epoch_t>(
 		 p->first.epoch_sent, p->first.query_epoch), payload);
 
-    // v5 needs from, to
+    // v4 needs from, to
     for (vector<pair<pg_notify_t, pg_interval_map_t> >::iterator p = pg_list.begin();
 	 p != pg_list.end();
 	 ++p) {
@@ -122,7 +122,7 @@ public:
       }
     }
 
-    // v5 needs from and to
+    // v4 needs from and to
     if (header.version >= 4) {
       for (vector<pair<pg_notify_t, pg_interval_map_t> >::iterator i = pg_list.begin();
 	   i != pg_list.end();
