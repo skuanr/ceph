@@ -1599,6 +1599,17 @@ void PG::activate(ObjectStore::Transaction& t,
 	peer_info[*i],
 	peer_missing[*i]);
     }
+    for (map<pg_shard_t, pg_missing_t>::iterator i = peer_missing.begin();
+	 i != peer_missing.end();
+	 ++i) {
+      if (is_actingbackfill(i->first))
+	continue;
+      assert(peer_info.count(i->first));
+      missing_loc.add_source_info(
+	i->first,
+	peer_info[i->first],
+	i->second);
+    }
 
     // If necessary, create might_have_unfound to help us find our unfound objects.
     // NOTE: It's important that we build might_have_unfound before trimming the
