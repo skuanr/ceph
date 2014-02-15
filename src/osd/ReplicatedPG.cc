@@ -9633,6 +9633,7 @@ int ReplicatedPG::recover_backfill(
 	 i->first < next_backfill_to_complete;
        pending_backfill_updates.erase(i++)) {
     hobject_t norm_hoid = normalize_hobject(i->first);
+    dout(10) << "i->first " << i->first << " norm " << norm_hoid << " new_last_backfill " << new_last_backfill << dendl;
     assert(norm_hoid > new_last_backfill);
     for (unsigned j = 0; j < backfill_targets.size(); ++j) {
       int bt = backfill_targets[j];
