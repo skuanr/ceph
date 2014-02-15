@@ -881,7 +881,8 @@ public:
     list<Context*>& tfin,
     map<int, map<spg_t,pg_query_t> >& query_map,
     map<int,
-        vector<pair<pg_notify_t, pg_interval_map_t> > > *activator_map=0);
+      vector<pair<pg_notify_t, pg_interval_map_t> > > *activator_map,
+    RecoveryCtx *ctx);
   void _activate_committed(epoch_t e);
   void all_activated_and_committed();
 

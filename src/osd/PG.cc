@@ -1390,7 +1390,8 @@ void PG::activate(ObjectStore::Transaction& t,
 		  map<int,
 		      vector<
 			pair<pg_notify_t,
-			     pg_interval_map_t> > > *activator_map)
+			     pg_interval_map_t> > > *activator_map,
+                  RecoveryCtx *ctx)
 {
   assert(!is_active());
   assert(scrubber.callbacks.empty());
@@ -1474,6 +1475,7 @@ void PG::activate(ObjectStore::Transaction& t,
 
   // if primary..
   if (is_primary()) {
+    assert(ctx);
     // start up replicas
 
     assert(actingbackfill.size() > 0);
@@ -1586,36 +1588,37 @@ void PG::activate(ObjectStore::Transaction& t,
 	missing_loc.add_active_missing(peer_missing[*i]);
       }
     }
-    missing_loc.add_source_info(pg_whoami, info, pg_log.get_missing());
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
-	 ++i) {
-      if (*i == pg_whoami) continue;
-      dout(10) << __func__ << ": adding " << *i << " as a source" << dendl;
-      assert(peer_missing.count(*i));
-      assert(peer_info.count(*i));
-      missing_loc.add_source_info(
-	*i,
-	peer_info[*i],
-	peer_missing[*i]);
-    }
-    for (map<pg_shard_t, pg_missing_t>::iterator i = peer_missing.begin();
-	 i != peer_missing.end();
-	 ++i) {
-      if (is_actingbackfill(i->first))
-	continue;
-      assert(peer_info.count(i->first));
-      missing_loc.add_source_info(
-	i->first,
-	peer_info[i->first],
-	i->second);
-    }
-
     // If necessary, create might_have_unfound to help us find our unfound objects.
     // NOTE: It's important that we build might_have_unfound before trimming the
     // past intervals.
     might_have_unfound.clear();
     if (needs_recovery()) {
+      missing_loc.add_source_info(pg_whoami, info, pg_log.get_missing());
+      for (set<pg_shard_t>::iterator i = actingbackfill.begin();
+	   i != actingbackfill.end();
+	   ++i) {
+	if (*i == pg_whoami) continue;
+	dout(10) << __func__ << ": adding " << *i << " as a source" << dendl;
+	assert(peer_missing.count(*i));
+	assert(peer_info.count(*i));
+	missing_loc.add_source_info(
+	  *i,
+	  peer_info[*i],
+	  peer_missing[*i]);
+      }
+      for (map<pg_shard_t, pg_missing_t>::iterator i = peer_missing.begin();
+	   i != peer_missing.end();
+	   ++i) {
+	if (is_actingbackfill(i->first))
+	  continue;
+	assert(peer_info.count(i->first));
+	search_for_missing(
+	  peer_info[i->first],
+	  i->second,
+	  i->first,
+	  ctx);
+      }
+
       build_might_have_unfound();
     }
 
@@ -6117,7 +6120,8 @@ PG::RecoveryState::Active::Active(my_context ctx)
 	       pg->get_osdmap()->get_epoch(),
 	       *context< RecoveryMachine >().get_on_safe_context_list(),
 	       *context< RecoveryMachine >().get_query_map(),
-	       context< RecoveryMachine >().get_info_map());
+	       context< RecoveryMachine >().get_info_map(),
+	       context< RecoveryMachine >().get_recovery_ctx());
   assert(pg->is_active());
   dout(10) << "Activate Finished" << dendl;
 }
@@ -6375,7 +6379,7 @@ boost::statechart::result PG::RecoveryState::ReplicaActive::react(
   pg->activate(*context< RecoveryMachine >().get_cur_transaction(),
 	       actevt.query_epoch,
 	       *context< RecoveryMachine >().get_on_safe_context_list(),
-	       query_map, NULL);
+	       query_map, NULL, NULL);
   dout(10) << "Activate Finished" << dendl;
   return discard_event();
 }
