@@ -9632,24 +9632,24 @@ int ReplicatedPG::recover_backfill(
        i != pending_backfill_updates.end() &&
 	 i->first < next_backfill_to_complete;
        pending_backfill_updates.erase(i++)) {
-    assert(normalize_hobject(i->first) > new_last_backfill);
+    hobject_t norm_hoid = normalize_hobject(i->first);
+    assert(norm_hoid > new_last_backfill);
     for (unsigned j = 0; j < backfill_targets.size(); ++j) {
       int bt = backfill_targets[j];
       pg_info_t& pinfo = peer_info[bt];
       //Add stats to all peers that were missing object
-      if (i->first > pinfo.last_backfill)
+      if (norm_hoid > pinfo.last_backfill)
         pinfo.stats.add(i->second);
     }
-    new_last_backfill = i->first;
+    /*
+     * We need avoid having SNAPDIR backfilled and HEAD not backfilled
+     * since a transaction on HEAD might change SNAPDIR.  Collapsing
+     * HEAD and SNAPDIR into a single item.
+     */
+    new_last_backfill = norm_hoid;
   }
   dout(10) << "possible new_last_backfill at " << new_last_backfill << dendl;
 
-  /*
-   * We need avoid having SNAPDIR backfilled and HEAD not backfilled
-   * since a transaction on HEAD might change SNAPDIR.  Collapsing
-   * HEAD and SNAPDIR into a single item.
-   */
-  new_last_backfill = normalize_hobject(new_last_backfill);
   last_backfill_started = normalize_hobject(last_backfill_started);
 
   assert(!pending_backfill_updates.empty() ||
