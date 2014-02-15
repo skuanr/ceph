@@ -1197,7 +1197,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
   }
 
   if ((m->get_flags() & CEPH_OSD_FLAG_IGNORE_CACHE) == 0 &&
-      maybe_handle_cache(op, obc, r, missing_oid))
+      maybe_handle_cache(op, write_ordered, obc, r, missing_oid, false))
     return;
 
   if (r) {
@@ -1264,7 +1264,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
 	  // missing the specific snap we need; requeue and wait.
 	  wait_for_missing_object(wait_oid, op);
 	} else if (r) {
-	  if (!maybe_handle_cache(op, sobc, r, wait_oid, true))
+	  if (!maybe_handle_cache(op, write_ordered, sobc, r, wait_oid, true))
 	    osd->reply_op_error(op, r);
 	} else if (sobc->obs.oi.is_whiteout()) {
 	  osd->reply_op_error(op, -ENOENT);
@@ -1324,7 +1324,7 @@ void ReplicatedPG::do_op(OpRequestRef op)
 	  // missing the specific snap we need; requeue and wait.
 	  wait_for_missing_object(wait_oid, op);
 	} else if (r) {
-	  if (!maybe_handle_cache(op, sobc, r, wait_oid, true))
+	  if (!maybe_handle_cache(op, write_ordered, sobc, r, wait_oid, true))
 	    osd->reply_op_error(op, r);
 	} else {
 	  dout(10) << " clone_oid " << clone_oid << " obc " << sobc << dendl;
@@ -1382,7 +1382,9 @@ void ReplicatedPG::do_op(OpRequestRef op)
   execute_ctx(ctx);
 }
 
-bool ReplicatedPG::maybe_handle_cache(OpRequestRef op, ObjectContextRef obc,
+bool ReplicatedPG::maybe_handle_cache(OpRequestRef op,
+				      bool write_ordered,
+				      ObjectContextRef obc,
                                       int r, const hobject_t& missing_oid,
 				      bool must_promote)
 {
@@ -1417,7 +1419,7 @@ bool ReplicatedPG::maybe_handle_cache(OpRequestRef op, ObjectContextRef obc,
     }
     if (agent_state &&
 	agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL) {
-      if (!op->may_write() && !op->may_cache()) {
+      if (!op->may_write() && !op->may_cache() && !write_ordered) {
 	dout(20) << __func__ << " cache pool full, redirecting read" << dendl;
 	do_cache_redirect(op, obc);
 	return true;
@@ -4442,7 +4444,7 @@ int ReplicatedPG::_rollback_to(OpContext *ctx, ceph_osd_op& op)
     wait_for_missing_object(missing_oid, ctx->op);
     return ret;
   }
-  if (maybe_handle_cache(ctx->op, rollback_to, ret, missing_oid, true)) {
+  if (maybe_handle_cache(ctx->op, true, rollback_to, ret, missing_oid, true)) {
     // promoting the rollback src, presumably
     return -EAGAIN;
   }
